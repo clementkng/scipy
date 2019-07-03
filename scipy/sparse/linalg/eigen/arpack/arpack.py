@@ -1777,6 +1777,9 @@ def svds(A, k=6, ncv=None, tol=0, which='LM', v0=None,
     >>> np.sqrt(eigs(A.dot(A.T), k=2)[0]).real
     array([ 5.6059665 ,  2.75193379])
     """
+    # A vs A.H specifications are in the if/else cases in this function
+    # Measures depends on n > m
+    # How do we tell which solver is more efficient otherwise
     if not (isinstance(A, LinearOperator) or isspmatrix(A)):
         A = np.asarray(A)
 
