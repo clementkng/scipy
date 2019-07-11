@@ -262,6 +262,7 @@ def test_verbosity():
     eigs,vecs = lobpcg(A, X, B=B, tol=1e-5, maxiter=30, largest=False,
                        verbosityLevel=11)
 
+# Sklearn Tests
 from scipy._lib._util import make_low_rank_matrix
 
 @pytest.mark.parametrize('dtype', [np.int32, np.int64, np.float32, np.float64])
@@ -334,3 +335,342 @@ def test_randomized_svd_low_rank(dtype, normalizer):
         assert Va.dtype.kind == 'f'
 
     assert_almost_equal(s[:rank], sa[:rank], decimal=decimal)
+
+# Scipy Tests (arpack)
+import numpy as np
+
+from numpy.testing import (assert_allclose, assert_array_almost_equal_nulp,
+                           assert_equal, assert_array_equal)
+from pytest import raises as assert_raises
+import pytest
+
+from scipy.linalg import eig, eigh, hilbert, svd
+from scipy.sparse import csc_matrix, csr_matrix, isspmatrix, diags
+from scipy.sparse.linalg import LinearOperator, aslinearoperator
+from scipy._lib._gcutils import assert_deallocated, IS_PYPY
+
+# New stuff you added
+from numpy.testing import (assert_array_almost_equal)
+
+#----------------------------------------------------------------------
+# sparse SVD tests
+
+def sorted_svd(m, k, which='LM'):
+    # Compute svd of a dense matrix m, and return singular vectors/values
+    # sorted.
+    if isspmatrix(m):
+        m = m.todense()
+    u, s, vh = svd(m)
+    if which == 'LM':
+        ii = np.argsort(s)[-k:]
+    elif which == 'SM':
+        ii = np.argsort(s)[:k]
+    else:
+        raise ValueError("unknown which=%r" % (which,))
+
+    return u[:, ii], s[ii], vh[ii]
+
+
+def svd_estimate(u, s, vh):
+    return np.dot(u, np.dot(np.diag(s), vh))
+
+def svd_test_input_check():
+    x = np.array([[1, 2, 3],
+                  [3, 4, 3],
+                  [1, 0, 2],
+                  [0, 0, 1]], float)
+
+    assert_raises(ValueError, lobpcg_svds, x, k=-1)
+    assert_raises(ValueError, lobpcg_svds, x, k=0)
+    assert_raises(ValueError, lobpcg_svds, x, k=10)
+    assert_raises(ValueError, lobpcg_svds, x, k=x.shape[0])
+    assert_raises(ValueError, lobpcg_svds, x, k=x.shape[1])
+    assert_raises(ValueError, lobpcg_svds, x.T, k=x.shape[0])
+    assert_raises(ValueError, lobpcg_svds, x.T, k=x.shape[1])
+
+
+def test_svd_simple_real():
+    x = np.array([[1, 2, 3],
+                  [3, 4, 3],
+                  [1, 0, 2],
+                  [0, 0, 1]], float)
+    y = np.array([[1, 2, 3, 8],
+                  [3, 4, 3, 5],
+                  [1, 0, 2, 3],
+                  [0, 0, 1, 0]], float)
+    z = csc_matrix(x)
+
+    for m in [x.T, x, y, z, z.T]:
+        for k in range(1, min(m.shape)):
+            u, s, vh = sorted_svd(m, k)
+            su, ss, svh = lobpcg_svds(m, k)
+
+            m_hat = svd_estimate(u, s, vh)
+            sm_hat = svd_estimate(su, ss, svh)
+
+            assert_array_almost_equal_nulp(m_hat, sm_hat, nulp=1000)
+
+
+def test_svd_simple_complex():
+    x = np.array([[1, 2, 3],
+                  [3, 4, 3],
+                  [1 + 1j, 0, 2],
+                  [0, 0, 1]], complex)
+    y = np.array([[1, 2, 3, 8 + 5j],
+                  [3 - 2j, 4, 3, 5],
+                  [1, 0, 2, 3],
+                  [0, 0, 1, 0]], complex)
+    z = csc_matrix(x)
+
+    for m in [x, x.T.conjugate(), x.T, y, y.conjugate(), z, z.T]:
+        for k in range(1, min(m.shape) - 1):
+            u, s, vh = sorted_svd(m, k)
+            su, ss, svh = lobpcg_svds(m, k)
+
+            m_hat = svd_estimate(u, s, vh)
+            sm_hat = svd_estimate(su, ss, svh)
+
+            assert_array_almost_equal_nulp(m_hat, sm_hat, nulp=1000)
+
+# Either not relevant or needs to be rewritten to be LOBCPG specific
+def test_svd_maxiter():
+    # check that maxiter works as expected
+    x = hilbert(6)
+    # # ARPACK shouldn't converge on such an ill-conditioned matrix with just
+    # # one iteration
+    # lobpcg_svds(x, 1, n_iter=1)
+    # but 100 iterations should be more than enough
+    u, s, vt = lobpcg_svds(x, 1, n_iter=100)
+    assert_allclose(s, [1.7], atol=0.5)
+
+# # Either not relevant or need to be rewritten to be LOBCPG specific (argument doesn't exist)
+# def test_svd_return():
+#     # check that the return_singular_vectors parameter works as expected
+#     x = hilbert(6)
+#     _, s, _ = sorted_svd(x, 2)
+#     ss = svds(x, 2, return_singular_vectors=False)
+#     assert_allclose(s, ss)
+
+# # Same as above
+# def test_svd_which():
+#     # check that the which parameter works as expected
+#     x = hilbert(6)
+#     for which in ['LM', 'SM']:
+#         _, s, _ = sorted_svd(x, 2, which=which)
+#         ss = lobpcg_svds(x, 2, which=which, return_singular_vectors=False)
+#         ss.sort()
+#         assert_allclose(s, ss, atol=np.sqrt(1e-15))
+
+# # Same as above
+# def test_svd_v0():
+#     # check that the v0 parameter works as expected
+#     x = np.array([[1, 2, 3, 4], [5, 6, 7, 8]], float)
+#
+#     u, s, vh = lobpcg_svds(x, 1)
+#     u2, s2, vh2 = lobpcg_svds(x, 1, v0=u[:,0])
+#
+#     assert_allclose(s, s2, atol=np.sqrt(1e-15))
+
+
+def _check_svds(A, k, U, s, VH):
+    n, m = A.shape
+
+    # Check shapes.
+    assert_equal(U.shape, (n, k))
+    assert_equal(s.shape, (k,))
+    assert_equal(VH.shape, (k, m))
+
+    # Check that the original matrix can be reconstituted.
+    A_rebuilt = (U*s).dot(VH)
+    assert_equal(A_rebuilt.shape, A.shape)
+    assert_allclose(A_rebuilt, A)
+
+    # Check that U is a semi-orthogonal matrix.
+    UH_U = np.dot(U.T.conj(), U)
+    assert_equal(UH_U.shape, (k, k))
+    assert_allclose(UH_U, np.identity(k), atol=1e-12)
+
+    # Check that V is a semi-orthogonal matrix.
+    VH_V = np.dot(VH, VH.T.conj())
+    assert_equal(VH_V.shape, (k, k))
+    assert_allclose(VH_V, np.identity(k), atol=1e-12)
+
+def test_svd_LM_ones_matrix():
+    # Check that svds can deal with matrix_rank less than k in LM mode.
+    k = 3
+    for n, m in (6, 5), (5, 5), (5, 6):
+        for t in float, complex:
+            A = np.ones((n, m), dtype=t)
+            U, s, VH = lobpcg_svds(A, k)
+
+            # Check some generic properties of svd.
+            _check_svds(A, k, U, s, VH)
+
+            # Check that the largest singular value is near sqrt(n*m)
+            # and the other singular values have been forced to close
+            # to zero.
+            assert_allclose(np.max(s), np.sqrt(n*m))
+            # Changed to relax tolerance
+            assert_array_almost_equal(sorted(s)[:-1], 0, decimal=30)
+
+
+def test_svd_LM_zeros_matrix():
+    # Check that svds can deal with matrices containing only zeros.
+    k = 1
+    for n, m in (3, 4), (4, 4), (4, 3):
+        for t in float, complex:
+            A = np.zeros((n, m), dtype=t)
+            U, s, VH = lobpcg_svds(A, k)
+
+            # Check some generic properties of svd.
+            _check_svds(A, k, U, s, VH)
+
+            # Check that the singular values are zero.
+            assert_array_equal(s, 0)
+
+
+def test_svd_LM_zeros_matrix_gh_3452():
+    # Regression test for a github issue.
+    # https://github.com/scipy/scipy/issues/3452
+    # Note that for complex dype the size of this matrix is too small for k=1.
+    n, m, k = 4, 2, 1
+    A = np.zeros((n, m))
+    U, s, VH = lobpcg_svds(A, k)
+
+    # Check some generic properties of svd.
+    _check_svds(A, k, U, s, VH)
+
+    # Check that the singular values are zero.
+    assert_array_equal(s, 0)
+
+
+class CheckingLinearOperator(LinearOperator):
+    def __init__(self, A):
+        self.A = A
+        self.dtype = A.dtype
+        self.shape = A.shape
+
+    def _matvec(self, x):
+        assert_equal(max(x.shape), np.size(x))
+        return self.A.dot(x)
+
+    def _rmatvec(self, x):
+        assert_equal(max(x.shape), np.size(x))
+        return self.A.T.conjugate().dot(x)
+
+# # For can't support putting a CheckingLinearOperator in
+# # Things attempted-wrapping np.asarray(L) and passing in, passing into lobcpg rather than lobcpg_svds
+# def test_svd_linop():
+#     nmks = [(6, 7, 3),
+#             (9, 5, 4),
+#             (10, 8, 5)]
+#
+#     def reorder(args):
+#         U, s, VH = args
+#         j = np.argsort(s)
+#         return U[:,j], s[j], VH[j,:]
+#     # arg not supported in LOBCPG v0
+#     for n, m, k in nmks:
+#         # Test svds on a LinearOperator.
+#         A = np.random.RandomState(52).randn(n, m)
+#         L = CheckingLinearOperator(A)
+#
+#
+#         U1, s1, VH1 = reorder(lobpcg_svds(A, k))
+#         # Why can arpack pass in a CheckingLinearOperator and have this work (when there's no reference to it)?
+#         U2, s2, VH2 = reorder(lobpcg_svds(np.asarray(L), k))
+#
+#         assert_allclose(np.abs(U1), np.abs(U2))
+#         assert_allclose(s1, s2)
+#         assert_allclose(np.abs(VH1), np.abs(VH2))
+#         assert_allclose(np.dot(U1, np.dot(np.diag(s1), VH1)),
+#                         np.dot(U2, np.dot(np.diag(s2), VH2)))
+#
+#         # # Try again with which="SM".
+#         # A = np.random.RandomState(1909).randn(n, m)
+#         # L = CheckingLinearOperator(A)
+#         # # arg not supported in LOBCPG
+#         # U1, s1, VH1 = reorder(lobpcg_svds(A, k, which="SM"))
+#         # U2, s2, VH2 = reorder(lobpcg_svds(L, k, which="SM"))
+#         #
+#         # assert_allclose(np.abs(U1), np.abs(U2))
+#         # assert_allclose(s1, s2)
+#         # assert_allclose(np.abs(VH1), np.abs(VH2))
+#         # assert_allclose(np.dot(U1, np.dot(np.diag(s1), VH1)),
+#         #                 np.dot(U2, np.dot(np.diag(s2), VH2)))
+#
+#         if k < min(n, m) - 1:
+#             # Complex input and explicit which="LM".
+#             for (dt, eps) in [(complex, 1e-7), (np.complex64, 1e-3)]:
+#                 rng = np.random.RandomState(1648)
+#                 A = (rng.randn(n, m) + 1j * rng.randn(n, m)).astype(dt)
+#                 L = CheckingLinearOperator(A)
+#
+#                 U1, s1, VH1 = reorder(lobpcg_svds(A, k))
+#                 U2, s2, VH2 = reorder(lobpcg_svds(L, k))
+#
+#                 assert_allclose(np.abs(U1), np.abs(U2), rtol=eps)
+#                 assert_allclose(s1, s2, rtol=eps)
+#                 assert_allclose(np.abs(VH1), np.abs(VH2), rtol=eps)
+#                 assert_allclose(np.dot(U1, np.dot(np.diag(s1), VH1)),
+#                                 np.dot(U2, np.dot(np.diag(s2), VH2)), rtol=eps)
+
+# # Arpack specific
+# @pytest.mark.skipif(IS_PYPY, reason="Test not meaningful on PyPy")
+# def test_linearoperator_deallocation():
+#     # Check that the linear operators used by the Arpack wrappers are
+#     # deallocatable by reference counting -- they are big objects, so
+#     # Python's cyclic GC may not collect them fast enough before
+#     # running out of memory if eigs/eigsh are called in a tight loop.
+#
+#     M_d = np.eye(10)
+#     M_s = csc_matrix(M_d)
+#     M_o = aslinearoperator(M_d)
+#
+#     with assert_deallocated(lambda: arpack.SpLuInv(M_s)):
+#         pass
+#     with assert_deallocated(lambda: arpack.LuInv(M_d)):
+#         pass
+#     with assert_deallocated(lambda: arpack.IterInv(M_s)):
+#         pass
+#     with assert_deallocated(lambda: arpack.IterOpInv(M_o, None, 0.3)):
+#         pass
+#     with assert_deallocated(lambda: arpack.IterOpInv(M_o, M_o, 0.3)):
+#         pass
+
+# # vh arg not supported in LOBCPG
+# def test_svds_partial_return():
+#     x = np.array([[1, 2, 3],
+#                   [3, 4, 3],
+#                   [1, 0, 2],
+#                   [0, 0, 1]], float)
+#     # test vertical matrix
+#     z = csr_matrix(x)
+#     vh_full = lobpcg_svds(z, 2)[-1]
+#     vh_partial = lobpcg_svds(z, 2, return_singular_vectors='vh')[-1]
+#     dvh = np.linalg.norm(np.abs(vh_full) - np.abs(vh_partial))
+#     if dvh > 1e-10:
+#         raise AssertionError('right eigenvector matrices differ when using return_singular_vectors parameter')
+#     if lobpcg_svds(z, 2, return_singular_vectors='vh')[0] is not None:
+#         raise AssertionError('left eigenvector matrix was computed when it should not have been')
+#     # test horizontal matrix
+#     z = csr_matrix(x.T)
+#     u_full = lobpcg_svds(z, 2)[0]
+#     u_partial = lobpcg_svds(z, 2, return_singular_vectors='vh')[0]
+#     du = np.linalg.norm(np.abs(u_full) - np.abs(u_partial))
+#     if du > 1e-10:
+#         raise AssertionError('left eigenvector matrices differ when using return_singular_vectors parameter')
+#     if lobpcg_svds(z, 2, return_singular_vectors='u')[-1] is not None:
+#         raise AssertionError('right eigenvector matrix was computed when it should not have been')
+
+# # which arg (different values) not supported in LOBCPG
+# def test_svds_wrong_eigen_type():
+#     # Regression test for a github issue.
+#     # https://github.com/scipy/scipy/issues/4590
+#     # Function was not checking for eigenvalue type and unintended
+#     # values could be returned.
+#     x = np.array([[1, 2, 3],
+#                   [3, 4, 3],
+#                   [1, 0, 2],
+#                   [0, 0, 1]], float)
+#     assert_raises(ValueError, lobpcg_svds, x, 1, which='LA')
