@@ -797,9 +797,8 @@ def lobpcg_svds(M, n_components, n_oversamples=10, n_iter='auto',
         # Make the normal matrix A with the smallest size
         transpose = n_samples > n_features
     if transpose:
-        # M = M.T.conj()
+        M = M.T.conj()
         # Addition from extmath.py
-        M = M.T
 
     Q = random_state.normal(size=(M.shape[0], n_random))
     # Here enters the implementation of _compute_orthonormal_lobpcg extmath.py
@@ -820,8 +819,7 @@ def lobpcg_svds(M, n_components, n_oversamples=10, n_iter='auto',
 
     # Determine the normal matrix
     if explicit_normal_matrix:
-        # A = _safe_sparse_dot(M, M.T.conj())
-        A = _safe_sparse_dot(M, M.T)
+        A = _safe_sparse_dot(M, M.T.conj())
     else:
         MLO = aslinearoperator(M)
 
@@ -831,8 +829,7 @@ def lobpcg_svds(M, n_components, n_oversamples=10, n_iter='auto',
                 return MLO(MLO.H(V))
 
         else:  # Old SciPy versions.
-            # MTLO = aslinearoperator(M.T.conj())
-            MTLO = aslinearoperator(M.T)
+            MTLO = aslinearoperator(M.T.conj())
 
             def _matvec(V):
                 return MLO(MTLO(V))
@@ -853,8 +850,7 @@ def lobpcg_svds(M, n_components, n_oversamples=10, n_iter='auto',
 
     # Back to randomized_svd
     # Project M to the (k + p) dimensional space using the basis vectors
-    # B = _safe_sparse_dot(Q.T.conj(), M)
-    B = _safe_sparse_dot(Q.T, M)
+    B = _safe_sparse_dot(Q.T.conj(), M)
 
     # Compute the SVD on the thin matrix: (k + p) wide
     Uhat, s, V = linalg.svd(B, full_matrices=False)
@@ -872,8 +868,7 @@ def lobpcg_svds(M, n_components, n_oversamples=10, n_iter='auto',
 
     if transpose:
         # Transpose back the results according to the input convention
-        # return (V[:n_components, :].T.conj(), s[:n_components],
-        return (V[:n_components, :].T, s[:n_components],
-                U[:, :n_components].T)
+        return (V[:n_components, :].T.conj(), s[:n_components],
+                U[:, :n_components].T.conj())
     else:
         return U[:, :n_components], s[:n_components], V[:n_components, :]
